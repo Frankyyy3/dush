@@ -1,0 +1,53 @@
+services:
+  db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password123}
+      POSTGRES_DB: ${POSTGRES_DB:-shower_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - PG_HOST=db
+      - PG_PORT=5432
+      - PG_USER=${POSTGRES_USER:-postgres}
+      - PG_PASS=${POSTGRES_PASSWORD:-password123}
+      - PG_NAME=${POSTGRES_DB:-shower_db}
+      - DB_HOST=${DB_HOST}      # NITRO DB Host
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+      - DB_NAME=${DB_NAME}
+      - SSH_HOST=${SSH_HOST}    # SSH Туннель
+      - SSH_USER=${SSH_USER}
+      - SSH_PASS=${SSH_PASS}
+      - SSH_PORT=22
+      - SECRET_KEY=${SECRET_KEY:-super-secret-key}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
+    # ports:
+    #   - "8000:8000"
+    depends_on:
+      - db
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    ports:
+      - "8090:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:

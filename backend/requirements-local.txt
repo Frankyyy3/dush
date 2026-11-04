@@ -1,0 +1,15 @@
+# Зависимости для локального запуска (SQLite, без Docker).
+# В проде используется requirements.txt с фиксированными версиями и PostgreSQL.
+fastapi>=0.115
+uvicorn>=0.30
+sqlalchemy>=2.0.27
+pymysql>=1.1
+sshtunnel>=0.4
+python-dotenv>=1.0
+cryptography>=43
+pydantic>=2.10
+paramiko>=3.4
+pyjwt>=2.8
+bcrypt>=4.1
+slowapi>=0.1.9
+pywebpush>=1.14

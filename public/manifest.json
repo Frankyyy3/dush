@@ -1,0 +1,40 @@
+{
+  "name": "AQUA.FLOW — Душ Шакарим",
+  "short_name": "AQUA.FLOW",
+  "description": "Электронная очередь в душ Университета Шакарим",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/university_logo.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/university_logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/favicon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "categories": ["productivity", "utilities"],
+  "lang": "ru",
+  "shortcuts": [
+    {
+      "name": "Забронировать душ",
+      "short_name": "Бронь",
+      "description": "Открыть душ",
+      "url": "/"
+    }
+  ]
+}
