@@ -1,17 +1,127 @@
 import { useState, useEffect } from 'react';
-import { Calendar, Clock, MapPin } from 'lucide-react';
+import { Calendar, Camera, Clock, MapPin } from 'lucide-react';
 import { SectionHeader } from './UI';
-import { BookingQr } from './AttendanceQr';
+import { API_URL } from '../constants';
+import { AttendanceQrScanner } from './AttendanceQr';
 
 export const HistoryView = ({ bookings, t, onRefresh, onCancel, notify }) => {
   useEffect(() => { onRefresh(); }, []);
-  const [flippedIndex, setFlippedIndex] = useState(null);
-  const today = new Date();
-  const todayString = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  const [scannerActive, setScannerActive] = useState(false);
+  const [attendanceToken, setAttendanceToken] = useState(null);
+  const [eligibleBookings, setEligibleBookings] = useState([]);
+  const [attendanceLoading, setAttendanceLoading] = useState(false);
+
+  const scanAttendanceQr = async ({ token }) => {
+    setScannerActive(false);
+    setAttendanceLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/attendance/scan`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${JSON.parse(localStorage.getItem('user')).token}`
+        },
+        body: JSON.stringify({ token }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        notify(data.detail || t('verification_failed'));
+        return;
+      }
+      setAttendanceToken(token);
+      setEligibleBookings(data.bookings || []);
+    } catch (error) {
+      console.error('Unable to load attendance bookings:', error);
+      notify(t('verification_failed'));
+    } finally {
+      setAttendanceLoading(false);
+    }
+  };
+
+  const confirmAttendance = async bookingId => {
+    setAttendanceLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/attendance/confirm`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${JSON.parse(localStorage.getItem('user')).token}`
+        },
+        body: JSON.stringify({ token: attendanceToken, booking_id: bookingId }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        notify(data.detail || t('verification_failed'));
+        return;
+      }
+      notify(t('attendance_success'));
+      setEligibleBookings(current => current.filter(booking => booking.id !== bookingId));
+      await onRefresh();
+    } catch (error) {
+      console.error('Unable to confirm attendance:', error);
+      notify(t('verification_failed'));
+    } finally {
+      setAttendanceLoading(false);
+    }
+  };
 
   return (
     <div className="p-4 md:p-10 lg:p-20 space-y-8 animate-fade-in bg-white font-mono min-h-screen">
       <SectionHeader title={t('history_log')} sub="BOOKING RECORDS_0.1" />
+
+      <section className="rounded-3xl border-4 border-slate-900 bg-blue-600 p-5 text-white shadow-[4px_4px_0_#000]">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-sm font-black uppercase tracking-wider">{t('attendance_checkin_title')}</h2>
+            <p className="mt-1 text-xs font-bold text-white/75">{t('attendance_checkin_hint')}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setEligibleBookings([]);
+              setAttendanceToken(null);
+              setScannerActive(value => !value);
+            }}
+            className="flex shrink-0 items-center justify-center gap-2 rounded-xl border-2 border-white/50 px-4 py-3 text-xs font-black uppercase tracking-wider transition-colors hover:bg-white/10"
+          >
+            <Camera size={16} />
+            {scannerActive ? t('close_scanner') : t('scan_attendance_qr')}
+          </button>
+        </div>
+        <AttendanceQrScanner
+          active={scannerActive}
+          onScan={scanAttendanceQr}
+          onError={key => {
+            setScannerActive(false);
+            notify(t(key));
+          }}
+          cameraLabel={t('camera_instructions')}
+        />
+        {attendanceLoading && <p className="mt-4 text-xs font-black uppercase">{t('loading')}</p>}
+        {eligibleBookings.length > 0 && (
+          <div className="mt-5 space-y-3">
+            <p className="text-xs font-black uppercase tracking-wider">{t('attendance_select_booking')}</p>
+            {eligibleBookings.map(booking => (
+              <div key={booking.id} className="flex flex-col gap-3 rounded-2xl bg-white p-4 text-slate-900 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="font-black uppercase">
+                    {booking.type === 'shower' ? t('booth') : t('washing_machine')} {booking.booth}
+                  </p>
+                  <p className="text-xs font-bold text-slate-500">{booking.date} · {String(booking.time).slice(0, 5)}</p>
+                </div>
+                <button
+                  type="button"
+                  disabled={attendanceLoading}
+                  onClick={() => confirmAttendance(booking.id)}
+                  className="rounded-xl bg-blue-600 px-4 py-3 text-xs font-black uppercase text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {t('mark_attendance')}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
 
       {bookings.length === 0 ? (
         <div className="h-96 flex flex-col items-center justify-center border-4 border-dashed border-slate-100 rounded-[3rem]">
@@ -25,27 +135,21 @@ export const HistoryView = ({ bookings, t, onRefresh, onCancel, notify }) => {
           {bookings.map((b, i) => (
             <div
               key={i}
-              className="group cursor-pointer h-64"
+              className="group h-48 md:h-56"
               style={{ perspective: '1000px' }}
-              onClick={() => setFlippedIndex(flippedIndex === i ? null : i)}
             >
-              <div 
-                className="relative w-full h-full transition-all duration-500" 
-                style={{ 
-                  transformStyle: 'preserve-3d', 
-                  transform: flippedIndex === i ? 'rotateY(180deg)' : 'rotateY(0deg)' 
-                }}
-              >
-                {/* Front Side */}
-                <div 
+              <div className="relative h-full w-full">
+                <div
                   className="absolute inset-0 bg-white border-4 border-slate-900 p-5 md:p-6 flex flex-col justify-between rounded-3xl shadow-[4px_4px_0_#000] hover:translate-x-[-2px] hover:translate-y-[-2px] hover:shadow-[6px_6px_0_#000] transition-all"
-                  style={{ backfaceVisibility: 'hidden', WebkitBackfaceVisibility: 'hidden' }}
                 >
                   <div className="flex justify-between items-start">
                     <div className="bg-blue-600 text-white p-2.5 rounded-xl"><Calendar size={18} /></div>
                     <div className="text-right">
                       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">#{b.id}</p>
                       <p className="text-[10px] font-black text-blue-600 uppercase tracking-widest mt-1">{b.type === 'shower' ? t('booth') : t('laundry')}</p>
+                      {b.is_attended && (
+                        <p className="mt-1 text-[9px] font-black uppercase tracking-wider text-green-600">{t('status_attended')}</p>
+                      )}
                     </div>
                   </div>
                   <div>
@@ -84,32 +188,6 @@ export const HistoryView = ({ bookings, t, onRefresh, onCancel, notify }) => {
                   </div>
                 </div>
 
-                {/* Back Side (CODE) */}
-                <div
-                  className="absolute inset-0 bg-blue-600 border-4 border-slate-900 p-4 flex flex-col items-center justify-center gap-2 rounded-3xl shadow-[4px_4px_0_#000]"
-                  style={{ 
-                    backfaceVisibility: 'hidden', 
-                    WebkitBackfaceVisibility: 'hidden',
-                    transform: 'rotateY(180deg)'
-                  }}
-                >
-                  {b.date === todayString && !b.is_attended ? (
-                    <>
-                      <p className="text-[10px] font-black text-white/80 uppercase tracking-[0.15em]">{t('show_qr')}</p>
-                      <div className="rounded-xl bg-white p-1.5">
-                        <BookingQr bookingId={b.id} code={b.check_code} label={t('booking_qr')} />
-                      </div>
-                      <p className="rounded-lg bg-white px-3 py-1 text-lg font-black tracking-[0.2em] text-slate-900">{b.check_code}</p>
-                    </>
-                  ) : (
-                    <>
-                      <p className="text-[10px] font-black text-white/70 uppercase tracking-[0.15em]">
-                        {b.is_attended ? t('status_attended') : t('qr_only_today')}
-                      </p>
-                      <p className="rounded-xl bg-white px-4 py-2 text-3xl font-black tracking-[0.2em] text-slate-900">{b.check_code}</p>
-                    </>
-                  )}
-                </div>
               </div>
             </div>
           ))}

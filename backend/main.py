@@ -8,7 +8,7 @@ from sqlalchemy import text as sql_text
 from typing import List, Optional
 import database as db
 from pydantic import BaseModel
-from datetime import datetime, date, time, timedelta
+from datetime import datetime, date, time, timedelta, timezone
 from dotenv import load_dotenv
 
 import hashlib
@@ -588,6 +588,146 @@ def update_booking(booking_id: int, update_data: BookingUpdate, admin: db.User =
 class BookingVerificationRequest(BaseModel):
     code: str
     booking_id: Optional[int] = None
+
+
+class AttendanceQrCreate(BaseModel):
+    dorm_name: Optional[str] = None
+
+
+class AttendanceQrScan(BaseModel):
+    token: str
+
+
+class AttendanceConfirm(AttendanceQrScan):
+    booking_id: int
+
+
+def decode_attendance_qr(token: str) -> List[str]:
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=400, detail="Срок действия QR-кода истёк. Попросите коменданта обновить его")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=400, detail="QR-код недействителен")
+
+    dorms = payload.get("dorms")
+    if payload.get("purpose") != "attendance" or not isinstance(dorms, list) or not dorms:
+        raise HTTPException(status_code=400, detail="QR-код недействителен")
+    if any(not isinstance(dorm, str) or not dorm for dorm in dorms):
+        raise HTTPException(status_code=400, detail="QR-код недействителен")
+    return dorms
+
+
+@app.post("/admin/attendance-qr")
+@limiter.limit("30/minute")
+def create_attendance_qr(
+    data: AttendanceQrCreate,
+    request: Request,
+    admin: db.User = Depends(admin_required),
+    session: Session = Depends(get_db),
+):
+    if admin.dorm_name == "UNIT-ALL":
+        allowed_dorms = [
+            row.dorm_name
+            for row in session.query(db.User.dorm_name)
+            .filter(db.User.dorm_name != None, db.User.dorm_name != "UNIT-ALL")
+            .distinct()
+            .all()
+        ]
+    else:
+        allowed_dorms = get_admin_dorms(admin)
+
+    if data.dorm_name:
+        if data.dorm_name not in allowed_dorms:
+            raise HTTPException(status_code=403, detail="У вас нет доступа к этому общежитию")
+        allowed_dorms = [data.dorm_name]
+    if not allowed_dorms:
+        raise HTTPException(status_code=400, detail="Не удалось определить общежитие для QR-кода")
+
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    token = jwt.encode(
+        {"purpose": "attendance", "dorms": allowed_dorms, "exp": expires_at},
+        SECRET_KEY,
+        algorithm=ALGORITHM,
+    )
+    return {"token": token, "expires_at": expires_at.isoformat()}
+
+
+@app.post("/attendance/scan")
+@limiter.limit("30/minute")
+def scan_attendance_qr(
+    data: AttendanceQrScan,
+    request: Request,
+    user: db.User = Depends(get_current_user),
+    session: Session = Depends(get_db),
+):
+    if user.role != "student":
+        raise HTTPException(status_code=403, detail="Только студент может отметить посещение")
+    dorms = decode_attendance_qr(data.token)
+    if user.dorm_name not in dorms:
+        raise HTTPException(status_code=403, detail="QR-код предназначен для другого общежития")
+
+    today = get_local_now().date()
+    bookings = session.query(db.Booking).filter(
+        db.Booking.user_id == user.id,
+        db.Booking.date == today,
+        db.Booking.dorm_name.in_(dorms),
+    ).order_by(db.Booking.time).all()
+    if not bookings:
+        raise HTTPException(status_code=404, detail="На сегодня нет записей в этом общежитии")
+
+    eligible_bookings = [booking for booking in bookings if not booking.is_attended]
+    if not eligible_bookings:
+        raise HTTPException(status_code=409, detail="Все записи на сегодня уже отмечены")
+
+    return {
+        "bookings": [
+            {
+                "id": booking.id,
+                "date": booking.date.isoformat(),
+                "time": booking.time.strftime("%H:%M"),
+                "type": booking.type,
+                "booth": booking.booth,
+            }
+            for booking in eligible_bookings
+        ]
+    }
+
+
+@app.post("/attendance/confirm")
+@limiter.limit("30/minute")
+def confirm_student_attendance(
+    data: AttendanceConfirm,
+    request: Request,
+    user: db.User = Depends(get_current_user),
+    session: Session = Depends(get_db),
+):
+    if user.role != "student":
+        raise HTTPException(status_code=403, detail="Только студент может отметить посещение")
+    dorms = decode_attendance_qr(data.token)
+    if user.dorm_name not in dorms:
+        raise HTTPException(status_code=403, detail="QR-код предназначен для другого общежития")
+
+    booking = session.query(db.Booking).filter(
+        db.Booking.id == data.booking_id,
+        db.Booking.user_id == user.id,
+        db.Booking.date == get_local_now().date(),
+        db.Booking.dorm_name.in_(dorms),
+    ).first()
+    if not booking:
+        raise HTTPException(status_code=404, detail="Запись не найдена или QR-код предназначен для другого общежития")
+    if booking.is_attended:
+        raise HTTPException(status_code=409, detail="Эта запись уже отмечена как посещённая")
+
+    booking.is_attended = True
+    session.add(db.AuditLog(
+        action="student_attendance",
+        admin_id=user.id,
+        booking_id=booking.id,
+        details=f"Attendance confirmed by student {user.student_id}",
+    ))
+    session.commit()
+    return {"status": "attended", "booking_id": booking.id}
 
 
 @app.post("/admin/verify-code")

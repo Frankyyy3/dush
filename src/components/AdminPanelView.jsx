@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
-import { Camera, Check, Search, Trash2, Edit2, Filter, Wrench, CheckCircle2, AlertTriangle, BarChart3, Clock, UserX, Activity, TrendingUp, ShowerHead, WashingMachine, Calendar, Bell, Users, History, Megaphone, Globe, Plus, Send, X, KeyRound, ShieldBan, ShieldCheck, Ban } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { Check, Search, Trash2, Edit2, Filter, Wrench, CheckCircle2, AlertTriangle, BarChart3, Clock, UserX, Activity, TrendingUp, ShowerHead, WashingMachine, Calendar, Bell, Users, History, Megaphone, Globe, Plus, Send, X, KeyRound, ShieldBan, ShieldCheck, Ban } from 'lucide-react';
 import { API_URL } from '../constants';
-import { AttendanceQrScanner } from './AttendanceQr';
+import { AttendanceSessionQr } from './AttendanceQr';
 
 // --- Analytics Panel ---
 const AnalyticsPanel = ({ bookings, t }) => {
@@ -1437,8 +1437,9 @@ export const AdminPanelView = ({ t, onRefresh, notify, user }) => {
   const [search, setSearch] = useState('');
   const [verifyCode, setVerifyCode] = useState('');
   const [verifiedStudent, setVerifiedStudent] = useState(null);
-  const [scannerActive, setScannerActive] = useState(false);
   const [verifyLoading, setVerifyLoading] = useState(false);
+  const [attendanceQr, setAttendanceQr] = useState(null);
+  const [attendanceQrLoading, setAttendanceQrLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('bookings'); // 'bookings' | 'maintenance'
 
   const [filterDorm, setFilterDorm] = useState('ALL');
@@ -1446,7 +1447,30 @@ export const AdminPanelView = ({ t, onRefresh, notify, user }) => {
   const isAdminWithMultiple = user.role === 'admin' && user.accessible_dorms && user.accessible_dorms.length > 1;
   const showDormFilter = user.dorm_name === 'UNIT-ALL' || isAdminWithMultiple;
 
-  useEffect(() => { fetchAdminData(); }, []);
+  const generateAttendanceQr = async () => {
+    setAttendanceQrLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/admin/attendance-qr`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${JSON.parse(localStorage.getItem('user')).token}`
+        },
+        body: JSON.stringify({ dorm_name: filterDorm === 'ALL' ? null : filterDorm }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        notify(data.detail || t('attendance_qr_failed'));
+        return;
+      }
+      setAttendanceQr({ ...data, scope: filterDorm });
+    } catch (error) {
+      console.error('Unable to generate attendance QR:', error);
+      notify(t('attendance_qr_failed'));
+    } finally {
+      setAttendanceQrLoading(false);
+    }
+  };
 
   const handleSendNotification = async (bookingId) => {
     try {
@@ -1492,7 +1516,6 @@ export const AdminPanelView = ({ t, onRefresh, notify, user }) => {
         fetchAdminData();
         notify(`SUCCESS // ${t('entry_allowed')}`);
         setVerifyCode('');
-        setScannerActive(false);
       } else {
         notify(data.detail || t('verification_failed'));
       }
@@ -1504,7 +1527,7 @@ export const AdminPanelView = ({ t, onRefresh, notify, user }) => {
     }
   };
 
-  const fetchAdminData = async () => {
+  const fetchAdminData = useCallback(async () => {
     try {
       const res = await fetch(`${API_URL}/admin/bookings`, {
         headers: { 'Authorization': `Bearer ${user.token}` }
@@ -1525,7 +1548,9 @@ export const AdminPanelView = ({ t, onRefresh, notify, user }) => {
       setAllBookings([]);
     }
     finally { setLoading(false); }
-  };
+  }, [user.token]);
+
+  useEffect(() => { fetchAdminData(); }, [fetchAdminData]);
 
   const handleDelete = async (id) => {
     if (!confirm("Confirm deletion?")) return;
@@ -1546,6 +1571,10 @@ export const AdminPanelView = ({ t, onRefresh, notify, user }) => {
   });
 
   const analyticsBookings = allBookings.filter(b => filterDorm === 'ALL' ? true : b.dorm_name === filterDorm);
+  const changeDormFilter = value => {
+    setFilterDorm(value);
+    setAttendanceQr(null);
+  };
 
   return (
     <div className="p-4 md:p-8 lg:p-16 animate-fade-in bg-white min-h-screen font-mono">
@@ -1573,25 +1602,24 @@ export const AdminPanelView = ({ t, onRefresh, notify, user }) => {
           </div>
           <button
             type="button"
-            onClick={() => setScannerActive(value => !value)}
-            className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border-2 border-white/30 px-4 py-3 text-xs font-black uppercase tracking-wider transition-colors hover:bg-white/10"
+            disabled={attendanceQrLoading}
+            onClick={generateAttendanceQr}
+            className="mt-3 w-full rounded-xl border-2 border-white/30 px-4 py-3 text-xs font-black uppercase tracking-wider transition-colors hover:bg-white/10 disabled:opacity-50"
           >
-            <Camera size={16} />
-            {scannerActive ? t('close_scanner') : t('scan_qr')}
+            {attendanceQrLoading ? t('loading') : t('show_attendance_qr')}
           </button>
-          <AttendanceQrScanner
-            active={scannerActive}
-            onScan={credential => {
-              setVerifyCode(credential.code);
-              setScannerActive(false);
-              handleVerify(credential);
-            }}
-            onError={key => {
-              setScannerActive(false);
-              notify(t(key));
-            }}
-            cameraLabel={t('camera_instructions')}
-          />
+          {attendanceQr && (
+            <div className="mt-4 flex flex-col items-center gap-2 rounded-2xl bg-white p-3 text-center text-slate-900">
+              <AttendanceSessionQr token={attendanceQr.token} label={t('attendance_qr_label')} />
+              <p className="text-[9px] font-black uppercase tracking-wider">{t('attendance_qr_caption')}</p>
+              <p className="text-[9px] font-black text-blue-600">
+                {attendanceQr.scope === 'ALL' ? t('attendance_qr_all_dorms') : attendanceQr.scope}
+              </p>
+              <p className="text-[9px] font-bold text-slate-500">
+                {t('attendance_qr_expires')} {new Date(attendanceQr.expires_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </p>
+            </div>
+          )}
           {verifiedStudent && (
             <div className="mt-4 p-4 bg-white text-slate-900 rounded-2xl animate-bounce-in border-4 border-slate-900">
               <p className="text-[8px] font-black uppercase text-slate-400 mb-1">{t('student_found')}</p>
@@ -1648,7 +1676,7 @@ export const AdminPanelView = ({ t, onRefresh, notify, user }) => {
               <span className="font-black text-xs uppercase tracking-widest text-slate-400 ml-2">Фильтр:</span>
               <select
                 value={filterDorm}
-                onChange={e => setFilterDorm(e.target.value)}
+                onChange={e => changeDormFilter(e.target.value)}
                 className="bg-slate-50 border-2 border-slate-200 px-4 py-2 rounded-xl font-black text-xs uppercase outline-none focus:ring-2 focus:ring-blue-600/20 cursor-pointer"
               >
                 <option value="ALL">Все общежития</option>
@@ -1674,7 +1702,7 @@ export const AdminPanelView = ({ t, onRefresh, notify, user }) => {
               {showDormFilter && (
                 <select
                   value={filterDorm}
-                  onChange={e => setFilterDorm(e.target.value)}
+                  onChange={e => changeDormFilter(e.target.value)}
                   className="w-full md:w-auto bg-white border-4 border-slate-900 px-4 py-3.5 rounded-2xl font-black text-xs uppercase outline-none focus:ring-4 focus:ring-blue-600/10 cursor-pointer shadow-sm"
                 >
                   <option value="ALL">Все общежития</option>

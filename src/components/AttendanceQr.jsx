@@ -1,10 +1,10 @@
 import { useEffect, useRef } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 
-export const BookingQr = ({ bookingId, code, label }) => (
+export const AttendanceSessionQr = ({ token, label }) => (
   <QRCodeSVG
-    value={JSON.stringify({ booking_id: bookingId, code: String(code) })}
-    size={116}
+    value={JSON.stringify({ purpose: 'attendance', token })}
+    size={180}
     level="M"
     includeMargin
     role="img"
@@ -48,31 +48,20 @@ export const AttendanceQrScanner = ({ active, onScan, onError, cameraLabel }) =>
             try {
               credential = JSON.parse(decoded);
             } catch {
-              if (/^\d{4,5}$/.test(decoded)) {
-                callbacksRef.current.onScan({ code: decoded });
-              } else {
-                callbacksRef.current.onError('invalid_qr');
-              }
-              return;
-            }
-            if (/^\d{4,5}$/.test(decoded)) {
-              callbacksRef.current.onScan({ code: decoded });
+              callbacksRef.current.onError('invalid_qr');
               return;
             }
             if (
               typeof credential !== 'object'
               || credential === null
-              || !Number.isInteger(credential.booking_id)
-              || credential.booking_id < 1
-              || !/^\d{4,5}$/.test(String(credential.code || ''))
+              || credential.purpose !== 'attendance'
+              || typeof credential.token !== 'string'
+              || credential.token.length === 0
             ) {
               callbacksRef.current.onError('invalid_qr');
               return;
             }
-            callbacksRef.current.onScan({
-              booking_id: credential.booking_id,
-              code: String(credential.code),
-            });
+            callbacksRef.current.onScan({ token: credential.token });
           },
           () => {},
         );
