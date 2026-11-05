@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { Check, Search, Trash2, Edit2, Filter, Wrench, CheckCircle2, AlertTriangle, BarChart3, Clock, UserX, Activity, TrendingUp, ShowerHead, WashingMachine, Calendar, Bell, Users, History, Megaphone, Globe, Plus, Send, X, KeyRound, ShieldBan, ShieldCheck, Ban } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Camera, Check, Search, Trash2, Edit2, Filter, Wrench, CheckCircle2, AlertTriangle, BarChart3, Clock, UserX, Activity, TrendingUp, ShowerHead, WashingMachine, Calendar, Bell, Users, History, Megaphone, Globe, Plus, Send, X, KeyRound, ShieldBan, ShieldCheck, Ban } from 'lucide-react';
 import { API_URL } from '../constants';
+import { AttendanceQrScanner } from './AttendanceQr';
 
 // --- Analytics Panel ---
 const AnalyticsPanel = ({ bookings, t }) => {
@@ -1436,6 +1437,8 @@ export const AdminPanelView = ({ t, onRefresh, notify, user }) => {
   const [search, setSearch] = useState('');
   const [verifyCode, setVerifyCode] = useState('');
   const [verifiedStudent, setVerifiedStudent] = useState(null);
+  const [scannerActive, setScannerActive] = useState(false);
+  const [verifyLoading, setVerifyLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('bookings'); // 'bookings' | 'maintenance'
 
   const [filterDorm, setFilterDorm] = useState('ALL');
@@ -1462,7 +1465,15 @@ export const AdminPanelView = ({ t, onRefresh, notify, user }) => {
     }
   };
 
-  const handleVerify = async () => {
+  const handleVerify = async (credential = verifyCode) => {
+    const verification = typeof credential === 'string'
+      ? { code: credential.trim() }
+      : credential;
+    if (!verification || !/^\d{4,5}$/.test(String(verification.code || '').trim())) {
+      notify(t('invalid_qr'));
+      return;
+    }
+    setVerifyLoading(true);
     try {
       const res = await fetch(`${API_URL}/admin/verify-code`, {
         method: 'POST',
@@ -1470,7 +1481,10 @@ export const AdminPanelView = ({ t, onRefresh, notify, user }) => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${user.token}`
         },
-        body: JSON.stringify({ code: verifyCode })
+        body: JSON.stringify({
+          code: String(verification.code).trim(),
+          ...(verification.booking_id ? { booking_id: verification.booking_id } : {}),
+        })
       });
       const data = await res.json();
       if (res.ok) {
@@ -1478,10 +1492,16 @@ export const AdminPanelView = ({ t, onRefresh, notify, user }) => {
         fetchAdminData();
         notify(`SUCCESS // ${t('entry_allowed')}`);
         setVerifyCode('');
+        setScannerActive(false);
       } else {
-        notify(data.detail);
+        notify(data.detail || t('verification_failed'));
       }
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+      notify(t('verification_failed'));
+    } finally {
+      setVerifyLoading(false);
+    }
   };
 
   const fetchAdminData = async () => {
@@ -1540,17 +1560,38 @@ export const AdminPanelView = ({ t, onRefresh, notify, user }) => {
           <div className="flex gap-2">
             <input
               type="text"
-              maxLength="4"
+              maxLength="5"
               placeholder="0000"
               value={verifyCode}
               onChange={e => setVerifyCode(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleVerify()}
               className="w-full bg-white/10 border-2 border-white/20 p-3 rounded-xl outline-none focus:bg-white/20 transition-all font-black text-2xl tracking-[0.2em] text-center placeholder:text-white/30 text-white"
             />
-            <button onClick={handleVerify} className="bg-white text-blue-600 p-3 rounded-xl hover:bg-slate-900 hover:text-white transition-all font-black shrink-0">
+            <button disabled={verifyLoading} onClick={() => handleVerify()} className="bg-white text-blue-600 p-3 rounded-xl hover:bg-slate-900 hover:text-white transition-all font-black shrink-0 disabled:opacity-50">
               <Check size={20} strokeWidth={4} />
             </button>
           </div>
+          <button
+            type="button"
+            onClick={() => setScannerActive(value => !value)}
+            className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border-2 border-white/30 px-4 py-3 text-xs font-black uppercase tracking-wider transition-colors hover:bg-white/10"
+          >
+            <Camera size={16} />
+            {scannerActive ? t('close_scanner') : t('scan_qr')}
+          </button>
+          <AttendanceQrScanner
+            active={scannerActive}
+            onScan={credential => {
+              setVerifyCode(credential.code);
+              setScannerActive(false);
+              handleVerify(credential);
+            }}
+            onError={key => {
+              setScannerActive(false);
+              notify(t(key));
+            }}
+            cameraLabel={t('camera_instructions')}
+          />
           {verifiedStudent && (
             <div className="mt-4 p-4 bg-white text-slate-900 rounded-2xl animate-bounce-in border-4 border-slate-900">
               <p className="text-[8px] font-black uppercase text-slate-400 mb-1">{t('student_found')}</p>

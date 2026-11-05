@@ -585,19 +585,24 @@ def update_booking(booking_id: int, update_data: BookingUpdate, admin: db.User =
     session.commit()
     return {"status": "updated"}
 
+class BookingVerificationRequest(BaseModel):
+    code: str
+    booking_id: Optional[int] = None
+
+
 @app.post("/admin/verify-code")
-@limiter.limit("5/minute")
-def verify_code(code_data: dict, request: Request, admin: db.User = Depends(admin_required), session: Session = Depends(get_db)):
-    code = code_data.get("code")
+@limiter.limit("30/minute")
+def verify_code(code_data: BookingVerificationRequest, request: Request, admin: db.User = Depends(admin_required), session: Session = Depends(get_db)):
+    code = code_data.code.strip()
     if not code:
         raise HTTPException(status_code=400, detail="Код не указан")
     
     # Ищем запись на сегодняшний день и текущий (или ближайший) час
     today_date = get_local_now().date()
     
-    query = session.query(db.Booking).filter(
-        db.Booking.check_code == code
-    )
+    query = session.query(db.Booking).filter(db.Booking.check_code == code)
+    if code_data.booking_id is not None:
+        query = query.filter(db.Booking.id == code_data.booking_id)
     
     if admin.dorm_name != "UNIT-ALL":
         query = query.filter(db.Booking.dorm_name.in_(get_admin_dorms(admin)))
@@ -610,6 +615,9 @@ def verify_code(code_data: dict, request: Request, admin: db.User = Depends(admi
         if wrong_day_booking:
             raise HTTPException(status_code=400, detail=f"Этот код действителен на {wrong_day_booking.date}, а не на сегодня!")
         raise HTTPException(status_code=404, detail="Код не найден или принадлежит другому общежитию")
+
+    if booking.is_attended:
+        raise HTTPException(status_code=409, detail="Эта запись уже отмечена как посещённая")
     
     # Отмечаем, что студент пришел
     booking.is_attended = True

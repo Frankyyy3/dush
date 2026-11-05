@@ -1,11 +1,13 @@
-import React, { useState, useEffect } from 'react';
-import { Calendar, Clock, MapPin, Hash, Trash2 } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Calendar, Clock, MapPin } from 'lucide-react';
 import { SectionHeader } from './UI';
-import { API_URL } from '../constants';
+import { BookingQr } from './AttendanceQr';
 
-export const HistoryView = ({ bookings, setActiveView, t, onRefresh, onCancel, notify, user }) => {
+export const HistoryView = ({ bookings, t, onRefresh, onCancel, notify }) => {
   useEffect(() => { onRefresh(); }, []);
   const [flippedIndex, setFlippedIndex] = useState(null);
+  const today = new Date();
+  const todayString = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
   return (
     <div className="p-4 md:p-10 lg:p-20 space-y-8 animate-fade-in bg-white font-mono min-h-screen">
@@ -23,7 +25,7 @@ export const HistoryView = ({ bookings, setActiveView, t, onRefresh, onCancel, n
           {bookings.map((b, i) => (
             <div
               key={i}
-              className="group cursor-pointer h-48 md:h-56"
+              className="group cursor-pointer h-64"
               style={{ perspective: '1000px' }}
               onClick={() => setFlippedIndex(flippedIndex === i ? null : i)}
             >
@@ -83,19 +85,30 @@ export const HistoryView = ({ bookings, setActiveView, t, onRefresh, onCancel, n
                 </div>
 
                 {/* Back Side (CODE) */}
-                <div 
-                  className="absolute inset-0 bg-blue-600 border-4 border-slate-900 p-5 flex flex-col items-center justify-center rounded-3xl shadow-[4px_4px_0_#000]"
+                <div
+                  className="absolute inset-0 bg-blue-600 border-4 border-slate-900 p-4 flex flex-col items-center justify-center gap-2 rounded-3xl shadow-[4px_4px_0_#000]"
                   style={{ 
                     backfaceVisibility: 'hidden', 
                     WebkitBackfaceVisibility: 'hidden',
                     transform: 'rotateY(180deg)'
                   }}
                 >
-                  <p className="text-[10px] font-black text-white/60 uppercase tracking-[0.2em] mb-4">{t('entry_code_label')}</p>
-                  <div className="bg-white border-4 border-slate-900 p-4 rounded-2xl shadow-lg mb-4 w-full text-center">
-                    <span className="text-4xl md:text-5xl font-black text-slate-900 tracking-[0.3em]">{b.check_code}</span>
-                  </div>
-                  <p className="text-[10px] font-black text-white uppercase tracking-widest">{t('verified')}</p>
+                  {b.date === todayString && !b.is_attended ? (
+                    <>
+                      <p className="text-[10px] font-black text-white/80 uppercase tracking-[0.15em]">{t('show_qr')}</p>
+                      <div className="rounded-xl bg-white p-1.5">
+                        <BookingQr bookingId={b.id} code={b.check_code} label={t('booking_qr')} />
+                      </div>
+                      <p className="rounded-lg bg-white px-3 py-1 text-lg font-black tracking-[0.2em] text-slate-900">{b.check_code}</p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-[10px] font-black text-white/70 uppercase tracking-[0.15em]">
+                        {b.is_attended ? t('status_attended') : t('qr_only_today')}
+                      </p>
+                      <p className="rounded-xl bg-white px-4 py-2 text-3xl font-black tracking-[0.2em] text-slate-900">{b.check_code}</p>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
