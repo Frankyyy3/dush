@@ -178,6 +178,10 @@ def _migrate_legacy_push_subscriptions():
 
 def start_remote_connection():
     global tunnel, remote_engine
+    if not all((SSH_HOST, SSH_USER, SSH_PASS, DB_HOST, DB_USER, DB_PASS, DB_NAME)):
+        print("Nitro DB tunnel is not configured; Platonus student login is unavailable.")
+        return
+
     try:
         # Close the existing SSH tunnel if it exists
         if tunnel:

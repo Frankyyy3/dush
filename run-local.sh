@@ -25,11 +25,15 @@ echo "==> Ставлю зависимости backend"
 "$PY" -m pip install -q --upgrade pip
 "$PY" -m pip install -q -r backend/requirements-local.txt
 
-# Локальные значения: своя SQLite-база, без доступа к боевому Platonus
+# Локальный режим: SQLite и локальные учётные записи, без Platonus.
 export DATABASE_URL="sqlite:///$ROOT/backend/local.db"
 export SECRET_KEY="${LOCAL_SECRET_KEY:-local-dev-secret}"
 export ADMIN_PASSWORD
+export LOCAL_STUDENT_AUTH=1
 export SSH_HOST= SSH_USER= SSH_PASS= DB_HOST= DB_USER= DB_PASS= DB_NAME=
+
+echo "==> Подготавливаю локальную базу"
+(cd backend && "$PY" seed_local.py)
 
 echo "==> Запускаю backend на http://127.0.0.1:8000"
 (cd backend && exec "$PY" -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload) &
@@ -56,5 +60,6 @@ fi
 
 echo "Готово. Сайт: http://localhost:5173"
 echo "Админ: admin / ${ADMIN_PASSWORD}"
+echo "Студенты: student1 / student123, student2 / student123"
 echo
 npm run dev

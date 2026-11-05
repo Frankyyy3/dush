@@ -215,6 +215,10 @@ def _mass_push_background(admin_id: int, title: str, message: str, dorms: List[s
         session.close()
 
 db.init_db()
+LOCAL_STUDENT_AUTH = (
+    os.getenv("LOCAL_STUDENT_AUTH") == "1"
+    and db.pg_engine.url.get_backend_name() == "sqlite"
+)
 
 app = FastAPI(title="AquaPass API")
 
@@ -381,6 +385,29 @@ def login(request: Request, user_data: UserLogin, session: Session = Depends(get
     banned = session.query(db.BannedStudent).filter(db.BannedStudent.student_id == user_data.student_id).first()
     if banned:
         raise HTTPException(status_code=403, detail=f"Ваш аккаунт заблокирован. Причина: {banned.reason or 'Не указана'}. Обратитесь к администрации.")
+
+    if LOCAL_STUDENT_AUTH:
+        if (
+            local_user
+            and local_user.role == "student"
+            and local_user.password
+            and bcrypt.checkpw(user_data.password.encode(), local_user.password.encode())
+        ):
+            access_token = jwt.encode(
+                {"sub": str(local_user.id), "exp": datetime.utcnow() + timedelta(days=7)},
+                SECRET_KEY,
+                algorithm=ALGORITHM,
+            )
+            return {
+                "id": local_user.id,
+                "student_id": local_user.student_id,
+                "fullname": local_user.fullname,
+                "dorm_name": local_user.dorm_name,
+                "room": local_user.room,
+                "role": "student",
+                "token": access_token,
+            }
+        raise HTTPException(status_code=401, detail="Неверный логин или пароль")
 
     # 3. Проверка через Платонус
     platonus_user = db.verify_student_platonus(user_data.student_id, user_data.password)

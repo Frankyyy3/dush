@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { LanguageSwitcher } from './UI';
 
 export const LoginView = ({ onLogin, lang, setLang, t, notify, API_URL }) => {
