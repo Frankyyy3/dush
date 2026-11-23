@@ -5,7 +5,12 @@ import { dates, timeSlots, dorm, API_URL } from '../constants';
 
 export const DashboardView = ({ onBook, bookings, setActiveView, t, user, notify, pushStatus, onEnablePush, type = "shower" }) => {
   const [selectedDate, setSelectedDate] = useState(() => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Almaty',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(new Date());
     return dates.find(d => d.full === today)?.full || dates.find(d => !d.isPast)?.full || dates[0].full;
   });
   const [selectedTime, setSelectedTime] = useState(null);
@@ -72,15 +77,17 @@ export const DashboardView = ({ onBook, bookings, setActiveView, t, user, notify
   useEffect(() => { fetchConfig(); }, [user.dorm_name, type]);
 
   const isTimeSlotPast = (time) => {
-    const today = new Date();
-    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    const todayStr = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Almaty',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(new Date());
 
     if (selectedDate !== todayStr) return false;
 
-    const [h, m] = time.split(':').map(Number);
-    const slotTime = new Date();
-    slotTime.setHours(h, m, 0, 0);
-    return slotTime < today;
+    const slotTime = new Date(`${selectedDate}T${time}:00+05:00`);
+    return slotTime <= new Date();
   };
 
   const handleBook = async () => {

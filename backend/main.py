@@ -9,6 +9,7 @@ from typing import List, Optional
 import database as db
 from pydantic import BaseModel
 from datetime import datetime, date, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 import hashlib
@@ -224,10 +225,8 @@ app = FastAPI(title="AquaPass API")
 
 def get_local_now():
     try:
-        from datetime import timezone, timedelta
         # Shakarim University is located in UTC+5 timezone (Asia/Almaty / Semey)
-        tz = timezone(timedelta(hours=5))
-        return datetime.now(tz).replace(tzinfo=None)
+        return datetime.now(ZoneInfo("Asia/Almaty")).replace(tzinfo=None)
     except Exception:
         return datetime.now()
 
@@ -333,13 +332,35 @@ def get_current_user(authorization: Optional[str] = Header(None), token: Optiona
         return user
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.JWTError:
+    except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Token corruption")
 
 def admin_required(user: db.User = Depends(get_current_user)):
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
+
+def superadmin_required(user: db.User = Depends(get_current_user)):
+    if user.role != "admin" or user.dorm_name != "UNIT-ALL":
+        raise HTTPException(status_code=403, detail="Доступ только для главного администратора")
+    return user
+
+def is_superadmin(admin: db.User) -> bool:
+    return admin.role == "admin" and admin.dorm_name == "UNIT-ALL"
+
+def ensure_student_in_admin_scope(
+    admin: db.User,
+    student: db.User,
+    session: Session,
+) -> None:
+    if is_superadmin(admin):
+        return
+    allowed_dorms = get_admin_dorms(admin)
+    if not student.dorm_name or student.dorm_name not in allowed_dorms:
+        raise HTTPException(
+            status_code=403,
+            detail="Комендант может блокировать только студентов своего общежития",
+        )
 
 # --- Routes ---
 
@@ -567,22 +588,81 @@ def update_booking(booking_id: int, update_data: BookingUpdate, admin: db.User =
         raise HTTPException(status_code=404, detail="Booking not found")
     if admin.dorm_name != "UNIT-ALL" and booking.dorm_name not in get_admin_dorms(admin):
         raise HTTPException(status_code=403, detail="Forbidden")
-    
+
+    final_date = update_data.date or booking.date.isoformat()
+    final_time = update_data.time or booking.time.strftime("%H:%M")
+    final_booth = update_data.booth or booking.booth
+
+    try:
+        target_date = datetime.strptime(final_date, "%Y-%m-%d").date()
+        target_time = datetime.strptime(final_time, "%H:%M").time()
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Неверный формат даты или времени")
+
+    local_now = get_local_now()
+    if target_date < local_now.date():
+        raise HTTPException(status_code=400, detail="Нельзя переместить запись на прошедшую дату")
+    if target_date - local_now.date() > timedelta(days=14):
+        raise HTTPException(status_code=400, detail="Запись доступна максимум на 14 дней вперёд")
+    if target_date.weekday() >= 5:
+        raise HTTPException(status_code=400, detail="Бронирование доступно только с понедельника по пятницу")
+    if datetime.combine(target_date, target_time) <= local_now:
+        raise HTTPException(status_code=400, detail="Нельзя переместить запись на прошедшее время")
+
+    config = session.query(db.DormConfig).filter(db.DormConfig.dorm_name == booking.dorm_name).first()
+    max_booths = 4
+    if config:
+        max_booths = config.shower_count if booking.type == "shower" else config.laundry_count
+    if final_booth < 1 or final_booth > max_booths:
+        raise HTTPException(status_code=400, detail="Неверный номер кабинки/машины")
+
+    maintenance = session.query(db.BoothStatus).filter(
+        db.BoothStatus.dorm_name == booking.dorm_name,
+        db.BoothStatus.booth == final_booth,
+        db.BoothStatus.type == booking.type,
+        db.BoothStatus.is_active == False,
+    ).first()
+    if maintenance:
+        raise HTTPException(status_code=400, detail=f"Кабинка недоступна: {maintenance.reason or 'ремонт'}")
+
+    conflict = session.query(db.Booking).filter(
+        db.Booking.id != booking.id,
+        db.Booking.date == target_date,
+        db.Booking.time == target_time,
+        db.Booking.booth == final_booth,
+        db.Booking.dorm_name == booking.dorm_name,
+        db.Booking.type == booking.type,
+    ).first()
+    if conflict:
+        raise HTTPException(status_code=400, detail="Этот слот уже занят другой записью")
+
+    holiday = session.query(db.HolidayBlock).filter(
+        db.HolidayBlock.dorm_name == booking.dorm_name,
+        db.HolidayBlock.start_date <= target_date,
+        db.HolidayBlock.end_date >= target_date,
+    ).first()
+    if holiday:
+        raise HTTPException(status_code=400, detail=f"Дата заблокирована: {holiday.reason}")
+
     changes = []
-    if update_data.date: 
-        booking.date = datetime.strptime(update_data.date, "%Y-%m-%d").date()
+    if update_data.date:
+        booking.date = target_date
         changes.append(f"date -> {update_data.date}")
-    if update_data.time: 
-        booking.time = datetime.strptime(update_data.time, "%H:%M").time()
+    if update_data.time:
+        booking.time = target_time
         changes.append(f"time -> {update_data.time}")
-    if update_data.booth: 
-        booking.booth = update_data.booth
+    if update_data.booth:
+        booking.booth = final_booth
         changes.append(f"booth -> {update_data.booth}")
-    
+
     log = db.AuditLog(action="update", admin_id=admin.id, booking_id=booking_id, details="; ".join(changes))
     session.add(log)
-    
-    session.commit()
+
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(status_code=400, detail="Этот слот только что заняли другой записью")
     return {"status": "updated"}
 
 class BookingVerificationRequest(BaseModel):
@@ -607,7 +687,7 @@ def decode_attendance_qr(token: str) -> List[str]:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=400, detail="Срок действия QR-кода истёк. Попросите коменданта обновить его")
-    except jwt.InvalidTokenError:
+    except jwt.PyJWTError:
         raise HTTPException(status_code=400, detail="QR-код недействителен")
 
     dorms = payload.get("dorms")
@@ -821,16 +901,76 @@ def create_booking(booking: BookingCreate, user: db.User = Depends(get_current_u
     user = session.query(db.User).filter(db.User.id == booking.user_id).with_for_update().first()
     if not user: raise HTTPException(status_code=404, detail="User not found")
 
-    # Booking window check (07:00 - 21:00)
+    try:
+        target_date = datetime.strptime(booking.date, "%Y-%m-%d").date()
+        target_time = datetime.strptime(booking.time, "%H:%M").time()
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Неверный формат даты или времени")
+
     local_now = get_local_now()
-    now_hour = local_now.hour
-    if now_hour < 7 or now_hour >= 21:
+    today = local_now.date()
+    if target_date < today:
+        raise HTTPException(status_code=400, detail="Нельзя бронировать прошедшую дату")
+    if target_date - today > timedelta(days=14):
+        raise HTTPException(status_code=400, detail="Запись доступна максимум на 14 дней вперёд")
+    if target_date.weekday() >= 5:
+        raise HTTPException(status_code=400, detail="Бронирование доступно только по расписанию с понедельника по пятницу")
+
+    target_datetime = datetime.combine(target_date, target_time)
+    if target_datetime <= local_now:
+        raise HTTPException(status_code=400, detail="Нельзя бронировать прошедшее время")
+    if target_date == today and (local_now.hour < 7 or local_now.hour >= 21):
         raise HTTPException(status_code=400, detail="Запись доступна только с 07:00 до 21:00")
 
-    # Enforce booking only on the current date
-    today_str = local_now.strftime("%Y-%m-%d")
-    if booking.date != today_str:
-        raise HTTPException(status_code=400, detail="Запись доступна только на сегодняшний день")
+    holiday = session.query(db.HolidayBlock).filter(
+        db.HolidayBlock.dorm_name == user.dorm_name,
+        db.HolidayBlock.start_date <= target_date,
+        db.HolidayBlock.end_date >= target_date,
+    ).first()
+    if holiday:
+        raise HTTPException(status_code=400, detail=f"Дата заблокирована: {holiday.reason}")
+
+    config = session.query(db.DormConfig).filter(db.DormConfig.dorm_name == user.dorm_name).first()
+    start_time = "08:00"
+    end_time = "21:00"
+    duration = 30
+    disabled_slots = []
+    max_booths = 4
+    if config:
+        start_time = config.start_time or start_time
+        end_time = config.end_time or end_time
+        duration = config.slot_duration or duration
+        max_booths = config.shower_count if booking.type == "shower" else config.laundry_count
+        if config.disabled_slots:
+            try:
+                disabled_slots = json.loads(config.disabled_slots)
+            except Exception:
+                disabled_slots = []
+
+    try:
+        schedule_start = datetime.strptime(start_time, "%H:%M")
+        schedule_end = datetime.strptime(end_time, "%H:%M")
+        available_slots = []
+        cursor = schedule_start
+        while cursor + timedelta(minutes=duration) <= schedule_end:
+            available_slots.append(cursor.strftime("%H:%M"))
+            cursor += timedelta(minutes=duration)
+    except (ValueError, TypeError):
+        available_slots = []
+
+    if booking.time not in available_slots:
+        raise HTTPException(status_code=400, detail="Время не входит в доступное расписание общежития")
+    if booking.time in disabled_slots:
+        raise HTTPException(status_code=400, detail="Этот временной слот заблокирован")
+
+    maintenance = session.query(db.BoothStatus).filter(
+        db.BoothStatus.dorm_name == user.dorm_name,
+        db.BoothStatus.booth == booking.booth,
+        db.BoothStatus.type == booking.type,
+        db.BoothStatus.is_active == False,
+    ).first()
+    if maintenance:
+        raise HTTPException(status_code=400, detail=f"Кабинка недоступна: {maintenance.reason or 'ремонт'}")
 
     # Duplicate check (User already booked today for this type)
     exists = session.query(db.Booking).filter(
@@ -842,11 +982,6 @@ def create_booking(booking: BookingCreate, user: db.User = Depends(get_current_u
         raise HTTPException(status_code=400, detail=f"У вас уже есть запись на {booking.type} в этот день")
     
     # Booth count check
-    config = session.query(db.DormConfig).filter(db.DormConfig.dorm_name == user.dorm_name).first()
-    max_booths = 4
-    if config:
-        max_booths = config.shower_count if booking.type == "shower" else config.laundry_count
-    
     if booking.booth > max_booths or booking.booth < 1:
         raise HTTPException(status_code=400, detail="Неверный номер кабинки/машины")
 
@@ -861,7 +996,6 @@ def create_booking(booking: BookingCreate, user: db.User = Depends(get_current_u
     if taken: raise HTTPException(status_code=400, detail="Это место уже занято")
     
     # Generate unique 4-digit code for this specific date and dorm
-    target_date = datetime.strptime(booking.date, "%Y-%m-%d").date()
     existing_codes_rows = session.query(db.Booking.check_code).filter(
         db.Booking.date == target_date,
         db.Booking.dorm_name == user.dorm_name
@@ -899,7 +1033,17 @@ def create_booking(booking: BookingCreate, user: db.User = Depends(get_current_u
 
 @app.get("/occupied-slots")
 def get_occupied_slots(date: str, dorm_name: str, type: str = "shower", session: Session = Depends(get_db)):
-    target_date = datetime.strptime(date, "%Y-%m-%d").date()
+    try:
+        target_date = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Неверный формат даты")
+
+    local_now = get_local_now()
+    today = local_now.date()
+    if target_date < today:
+        raise HTTPException(status_code=400, detail="Нельзя запрашивать прошедшую дату")
+    if target_date - today > timedelta(days=14):
+        raise HTTPException(status_code=400, detail="Расписание доступно максимум на 14 дней вперёд")
     
     # 1. Проверяем санитарные дни / праздники (Holiday Blocks)
     holiday = session.query(db.HolidayBlock).filter(
@@ -1355,9 +1499,6 @@ def apply_global_config(data: GlobalConfigRequest, admin: db.User = Depends(admi
 @app.get("/admin/banned-students")
 def get_banned_students(admin: db.User = Depends(admin_required), session: Session = Depends(get_db)):
     """Список заблокированных студентов."""
-    if admin.dorm_name != "UNIT-ALL":
-        raise HTTPException(status_code=403, detail="Доступ только для главного администратора")
-    
     banned = session.query(db.BannedStudent).order_by(db.BannedStudent.banned_at.desc()).all()
     res = []
     for b in banned:
@@ -1369,6 +1510,9 @@ def get_banned_students(admin: db.User = Depends(admin_required), session: Sessi
         
         # Получаем имя студента из таблицы пользователей
         student = session.query(db.User).filter(db.User.student_id == b.student_id).first()
+        if not is_superadmin(admin):
+            if not student or student.dorm_name not in get_admin_dorms(admin):
+                continue
         
         res.append({
             "id": b.id,
@@ -1384,14 +1528,16 @@ def get_banned_students(admin: db.User = Depends(admin_required), session: Sessi
 @app.delete("/admin/banned-students/{ban_id}")
 def unban_student(ban_id: int, admin: db.User = Depends(admin_required), session: Session = Depends(get_db)):
     """Разблокировка студента (удаление из чёрного списка)."""
-    if admin.dorm_name != "UNIT-ALL":
-        raise HTTPException(status_code=403, detail="Доступ только для главного администратора")
-    
     ban_record = session.query(db.BannedStudent).filter(db.BannedStudent.id == ban_id).first()
     if not ban_record:
         raise HTTPException(status_code=404, detail="Запись о блокировке не найдена")
     
     student_id = ban_record.student_id
+    student = session.query(db.User).filter(db.User.student_id == student_id).first()
+    if student:
+        ensure_student_in_admin_scope(admin, student, session)
+    elif not is_superadmin(admin):
+        raise HTTPException(status_code=403, detail="Нельзя разблокировать студента другого общежития")
     
     # Аудит лог
     log = db.AuditLog(
@@ -1413,9 +1559,6 @@ class BanStudentRequest(BaseModel):
 @app.post("/admin/ban-student")
 def ban_student(data: BanStudentRequest, admin: db.User = Depends(admin_required), session: Session = Depends(get_db)):
     """Ручная блокировка студента администратором."""
-    if admin.dorm_name != "UNIT-ALL":
-        raise HTTPException(status_code=403, detail="Доступ только для главного администратора")
-    
     # Проверяем, не заблокирован ли уже
     existing = session.query(db.BannedStudent).filter(db.BannedStudent.student_id == data.student_id).first()
     if existing:
@@ -1428,6 +1571,7 @@ def ban_student(data: BanStudentRequest, admin: db.User = Depends(admin_required
     
     if student.role == "admin":
         raise HTTPException(status_code=400, detail="Нельзя заблокировать администратора")
+    ensure_student_in_admin_scope(admin, student, session)
     
     ban = db.BannedStudent(
         student_id=data.student_id,

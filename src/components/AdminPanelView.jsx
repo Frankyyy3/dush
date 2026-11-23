@@ -1441,6 +1441,8 @@ export const AdminPanelView = ({ t, onRefresh, notify, user }) => {
   const [attendanceQr, setAttendanceQr] = useState(null);
   const [attendanceQrLoading, setAttendanceQrLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('bookings'); // 'bookings' | 'maintenance'
+  const isSuperAdmin = user.role === 'admin' && user.dorm_name === 'UNIT-ALL';
+  const canManageBans = user.role === 'admin';
 
   const [filterDorm, setFilterDorm] = useState('ALL');
   const availableDorms = Array.from(new Set(allBookings.map(b => b.dorm_name))).filter(Boolean);
@@ -1645,10 +1647,12 @@ export const AdminPanelView = ({ t, onRefresh, notify, user }) => {
           { key: 'bookings', label: 'Записи', icon: <Filter size={14} /> },
           { key: 'maintenance', label: 'Кабинки', icon: <Wrench size={14} /> },
           { key: 'analytics', label: 'Аналитика', icon: <BarChart3 size={14} /> },
-          ...(user.dorm_name === 'UNIT-ALL' ? [
+          ...(isSuperAdmin ? [
             { key: 'admins', label: 'Коменданты', icon: <Users size={14} /> },
-            { key: 'banned', label: 'Блокировки', icon: <ShieldBan size={14} /> },
             { key: 'audit', label: 'Журнал', icon: <History size={14} /> },
+          ] : []),
+          ...(canManageBans ? [
+            { key: 'banned', label: 'Блокировки', icon: <ShieldBan size={14} /> },
           ] : []),
           ...(user.dorm_name === 'UNIT-ALL' || user.can_send_push ? [
             { key: 'announcements', label: 'Объявления', icon: <Megaphone size={14} /> }
@@ -1687,10 +1691,10 @@ export const AdminPanelView = ({ t, onRefresh, notify, user }) => {
           <AnalyticsPanel bookings={analyticsBookings} t={t} />
         </div>
       )}
-      {activeTab === 'admins' && user.dorm_name === 'UNIT-ALL' && <AdminsListPanel user={user} notify={notify} t={t} />}
+      {activeTab === 'admins' && isSuperAdmin && <AdminsListPanel user={user} notify={notify} t={t} />}
       {activeTab === 'announcements' && (user.dorm_name === 'UNIT-ALL' || user.can_send_push) && <AnnouncementsPanel user={user} notify={notify} />}
-      {activeTab === 'banned' && user.dorm_name === 'UNIT-ALL' && <BannedStudentsPanel user={user} notify={notify} />}
-      {activeTab === 'audit' && user.dorm_name === 'UNIT-ALL' && <AuditLogsPanel user={user} notify={notify} />}
+      {activeTab === 'banned' && canManageBans && <BannedStudentsPanel user={user} notify={notify} />}
+      {activeTab === 'audit' && isSuperAdmin && <AuditLogsPanel user={user} notify={notify} />}
 
       {activeTab === 'bookings' && (
         <div className="bg-slate-50 border-4 border-slate-900 p-6 md:p-10 rounded-[3rem] animate-fade-in">

@@ -1,13 +1,14 @@
 """Populate the local SQLite database with fictional local starter data."""
 
 from datetime import date, datetime, time, timedelta
+import json
 
 import bcrypt
 import database as db
 
 
 LOCAL_DORMS = [
-    ("Студенческий дом №1", 6, 3, "08:00", "22:00"),
+    ("Дом №1", 6, 3, "08:00", "22:00"),
     ("Студенческий дом №2", 8, 4, "07:00", "23:00"),
     ("Студенческий дом №3", 5, 2, "08:00", "21:00"),
     ("Студенческий дом №4", 7, 3, "06:00", "22:00"),
@@ -27,6 +28,15 @@ LOCAL_LOGIN_ACCOUNTS = [
     ("student1", "Алия Садыкова", LOCAL_DORMS[0][0], "102", "student123", "demo1"),
     ("student2", "Данияр Нурланов", LOCAL_DORMS[1][0], "103", "student123", "demo2"),
 ]
+
+LOCAL_ADMIN_ACCOUNTS = [
+    ("admin", "Суперадмин", "UNIT-ALL", "admin123", None),
+    ("admin_ds1", "Комендант Дом №1", "Дом №1", "admin_ds1", ["Дом №1"]),
+]
+
+LOCAL_REQUESTED_ACCOUNTS = {
+    "student1": "student123",
+}
 
 EVENTS = [
     ("shower", 1, time(12, 0)),
@@ -48,6 +58,7 @@ def main():
     added = {
         "users": 0,
         "student_logins": 0,
+        "admin_logins": 0,
         "dorm_configs": 0,
         "booth_statuses": 0,
         "bookings": 0,
@@ -67,6 +78,13 @@ def main():
                     {model.dorm_name: dorm_name},
                     synchronize_session=False,
                 )
+        for model in dorm_tables:
+            session.query(model).filter(
+                model.dorm_name == "Студенческий дом №1"
+            ).update(
+                {model.dorm_name: "Дом №1"},
+                synchronize_session=False,
+            )
 
         students_by_dorm = {}
         for dorm_index, dorm_data in enumerate(LOCAL_DORMS, start=1):
@@ -171,6 +189,80 @@ def main():
                 ).decode()
                 added["student_logins"] += 1
             students_by_dorm[dorm_name][0] = student
+
+        commander_dorm = "Дом №1"
+        commander_config = (
+            session.query(db.DormConfig)
+            .filter(db.DormConfig.dorm_name == commander_dorm)
+            .first()
+        )
+        if not commander_config:
+            session.add(
+                db.DormConfig(
+                    dorm_name=commander_dorm,
+                    shower_count=4,
+                    laundry_count=4,
+                    start_time="08:00",
+                    end_time="21:00",
+                    slot_duration=30,
+                    disabled_slots="[]",
+                )
+            )
+            added["dorm_configs"] += 1
+
+        requested_student = (
+            session.query(db.User)
+            .filter(db.User.student_id == "student1")
+            .first()
+        )
+        if requested_student:
+            requested_student.fullname = "Алия Садыкова"
+            requested_student.dorm_name = commander_dorm
+            requested_student.room = "102"
+            requested_password = LOCAL_REQUESTED_ACCOUNTS["student1"]
+            if (
+                not requested_student.password
+                or not bcrypt.checkpw(
+                    requested_password.encode(), requested_student.password.encode()
+                )
+            ):
+                requested_student.password = bcrypt.hashpw(
+                    requested_password.encode(), bcrypt.gensalt()
+                ).decode()
+                added["student_logins"] += 1
+
+        for login, fullname, dorm_name, password, accessible_dorms in LOCAL_ADMIN_ACCOUNTS:
+            admin = (
+                session.query(db.User)
+                .filter(db.User.student_id == login)
+                .first()
+            )
+            if not admin:
+                admin = db.User(
+                    student_id=login,
+                    fullname=fullname,
+                    dorm_name=dorm_name,
+                    room=None,
+                    role="admin",
+                )
+                session.add(admin)
+                session.flush()
+                added["users"] += 1
+                added["admin_logins"] += 1
+
+            admin.fullname = fullname
+            admin.role = "admin"
+            admin.dorm_name = dorm_name
+            admin.accessible_dorms = (
+                json.dumps(accessible_dorms) if accessible_dorms is not None else None
+            )
+            if not admin.password or not bcrypt.checkpw(
+                password.encode(), admin.password.encode()
+            ):
+                admin.password = bcrypt.hashpw(
+                    password.encode(), bcrypt.gensalt()
+                ).decode()
+                added["admin_logins"] += 1
 
         session.flush()
 
